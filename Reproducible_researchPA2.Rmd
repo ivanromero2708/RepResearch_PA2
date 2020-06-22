@@ -1,0 +1,181 @@
+---
+title: "Health and economy impact of Severe Weather Events: An outlook of the most harmful event type in the US between 1950 to 2011 "
+author: "Ivan Romero"
+date: "20/6/2020"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE, warning= FALSE)
+```
+
+## 1. Introduction
+
+Storms and other severe weather events can cause both public health and economic problems for communities and municipalities. Many severe events can result in fatalities, injuries, and property damage, and preventing such outcomes to the extent possible is a key concern.
+
+This project involves exploring the U.S. National Oceanic and Atmospheric Administration's (NOAA) storm database. This database tracks characteristics of major storms and weather events in the United States, including when and where they occur, as well as estimates of any fatalities, injuries, and property damage.
+
+The basic goal of this assignment is to explore the NOAA Storm Database and answer some basic questions about severe weather events: The data analysis must address the following questions:
+
+1.- Across the United States, which types of events (as indicated in the EVTYPE variable) are most harmful with respect to population health?
+
+2.- Across the United States, which types of events have the greatest economic consequences?
+
+## 2. Synopsis
+
+The present document reports the exploratory analysis of the NOAA Storm Database. The analysis is focused on the health and economic impacts of severe weather events across the United States between 1950 and 2011, establishing the weather event type that have the highest impact on several indicators such as fatalities, injuries, property damage costs and crop damage costs. Tornados are the most harmful weather events according to the health related event index, followed by Excessive Heat, TSTM Wind, Floods, and Lighting. Floods are the Weather events with the highest economic impact estimated as the total damage from property and crops, followed by Hurricane/Typhoons, Tornado, Storm Surge and Hails.
+
+## 3. Data processing
+
+Raw data for this report can be downloaded from the course website: [Storm Database][1]. Supplementary information about the assembly of the Storm Database can be looked up on [Storm Data Documentation][2]. In a preparatory step previous to getting adn cleaning data for the analysis, folder directories for data, figures and R code are created in the following chunk of code:
+
+```{r createdir, echo=TRUE, warning=FALSE, cache=TRUE}
+## Creating directories inside the project folder
+if(!dir.exists("data")) {dir.create("data")}
+if(!dir.exists("figures")) {dir.create("figures")}
+if(!dir.exists("Rcode")) {dir.create("Rcode")}
+```
+
+As previously stated, raw data can be obtained from the course website. The .csv file is compressed as a .bz2 file that can be extracted by using the **bunzip.2** function from the **R.utils** package. This process is executed in the following lines of code, including the reading and storing of the raw data file into the "storm_rawdata" dataframe. In order to get a sense about the variables incorporated into this data frame, a summary of the data frame is presented
+
+```{r getdata, echo= TRUE, cache= TRUE, warning=FALSE}
+## Download file
+rdatafilename <- "stormdata.zip"
+rdatafileloc <- paste0("./",rdatafilename)
+if(!file.exists(rdatafileloc)) {
+        fileUrl <- "https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2"
+        download.file(fileUrl, rdatafileloc, method = "curl")
+}
+
+## Decompressing the zip file and verifying
+if(!file.exists("./data/storm.csv")) {
+        library(R.utils)
+        bunzip2(rdatafileloc, "./data/storm.csv", remove = TRUE)
+}
+
+## Reading the data
+storm_rawdata <- read.csv("./data/storm.csv")
+summary(storm_rawdata)
+```
+
+As expressed in the introductory lines of this report, the aim of the analysis is to explore the health and economic effects of severe weather events. Thus, only variables such as *FATALITIES*, and *INJURIES* for health impact; and *PROPDMG*, and *CROPDMG* will be considered. It is worth mentioning that *PROPDMGEXP* and *CROPDMGEXP* economic will also be considered for economic impact evaluation, because this variable represents the exponent of the Property and Crop damage value estimation. These variables are alphabetical characters used to signify damage magnitude, expressed as following: “K” for thousands, “M” for millions, and “B” for billions. The extraction process for these variables, and the specific values for exponent are shown in the next chunk of code as a data cleaning stage previous to the initial analysis:
+
+```{r cleandata, echo= TRUE, cache= TRUE, warning=FALSE}
+library(dplyr)
+storm_rawdata <- storm_rawdata %>% select(STATE, BGN_DATE, EVTYPE, FATALITIES, INJURIES, PROPDMG, PROPDMGEXP, CROPDMG, CROPDMGEXP)
+storm_rawdata <- storm_rawdata[storm_rawdata$PROPDMGEXP %in% c("", "K", "M", "B") & storm_rawdata$CROPDMGEXP %in% c("", "K", "M", "B"), ]
+str(storm_rawdata)
+```
+
+For estimating the health impact of severe weather events, the functions **group_by**, **summarize**, and **arrange** from the **dplyr** package with the pipeline operator will be use. Initially, the raw data frame is grouped by event type, and summarized by the total number of injuries and fatalities in separated data frames. Next, the data frames are merged and the total number of health related events that can be expressed as the sum of the injuries and fatalities is calculated, including a danger inidicator that is estimated as the percentage of fatalities from the health related events. The data frame is ordered in a descendent fashion according the number of health related events, and the top 10 is stored in the data frame **healthimpact_evtype**. The previously described process is executed in the next lines of code:
+
+```{r healthimpact, echo= TRUE, cache= TRUE, warning=FALSE}
+## Calculating FATALITIES AND INJURIES per Event Type
+INJURIES_EVTYPE <- storm_rawdata %>% group_by(EVTYPE) %>%
+        summarize(TOTAL_INJURIES = sum(INJURIES, na.rm = TRUE)) %>%
+        arrange(desc(TOTAL_INJURIES))
+
+FATALITIES_EVTYPE <- storm_rawdata %>% group_by(EVTYPE) %>%
+        summarize(TOTAL_FATALITIES = sum(FATALITIES, na.rm = TRUE)) %>%
+        arrange(desc(TOTAL_FATALITIES))
+
+## Creating Health impact Data frame
+healthimpact_evtype <- merge(INJURIES_EVTYPE, FATALITIES_EVTYPE, by = "EVTYPE")
+healthimpact_evtype <- healthimpact_evtype %>% mutate(EVENTS = (TOTAL_FATALITIES+TOTAL_INJURIES), DANGER = TOTAL_FATALITIES/(TOTAL_FATALITIES+TOTAL_INJURIES)) %>%
+                                                arrange(desc(EVENTS))
+# Subsetting top 10 event types per number of health related events
+healthimpact_evtype <- healthimpact_evtype[1:10,]
+```
+
+For calculating the property and crop damages cost estimation in dollars, the multivariate loop function **mapply** is used. A function that identifies the alphabetical character is introduced as argument to the mapply function, and applied to the DMG and EXP values from property and crop damage cost estimation. New columns for property and crop damage cost estimation in dollars are created
+
+```{r dmgcalc, echo= TRUE, cache= TRUE, warning=FALSE}
+## Calculating Crop and Property damages in US
+storm_rawdata$PROPDMG_inUS <- mapply(function(DMGval, DMGexp) {if (DMGexp == "K" | DMGexp == "k") {DMGval * 1000} 
+                           else if (DMGexp == "M" | DMGexp == "m") {DMGval * 1e+06} 
+                           else if (DMGexp == "B") {DMGval * 1e+09}
+                           else if (DMGexp == "") {DMGval*0}}, 
+                           storm_rawdata$PROPDMG, storm_rawdata$PROPDMGEXP)
+
+
+storm_rawdata$CROPDMG_inUS <- mapply(function(DMGval, DMGexp) {if (DMGexp == "K" | DMGexp == "k") {DMGval * 1000} 
+                                else if (DMGexp == "M" | DMGexp == "m") {DMGval * 1e+06} 
+                                else if (DMGexp == "B") {DMGval * 1e+09}
+                                else if (DMGexp == "") {DMGval*0}}, 
+                                storm_rawdata$CROPDMG, storm_rawdata$CROPDMGEXP)
+```
+
+Similarly to health impact estimation process, the functions **group by**, **summarize**, and **arrange** are executed with the pipeline operator for grouping and summarizing the total crop and peroperty damage cost per weather event type. These data frames are merged, the total damage cost is calculated, and the top 10 most harmful weather events on the economy are extracted. This process is shown in the following code chunk:
+
+```{r economic_impact, echo= TRUE, cache= TRUE, warning=FALSE}
+library(dplyr)
+## Calculating Crop and Property Damages economic impact per event type
+PROPDMG_EVTYPE <- storm_rawdata %>% group_by(EVTYPE) %>%
+        summarize(TOTAL_PROPDMG = sum(PROPDMG_inUS, na.rm = TRUE)/(1e+06)) %>%
+        arrange(desc(TOTAL_PROPDMG))
+
+CROPDMG_EVTYPE <- storm_rawdata %>% group_by(EVTYPE) %>%
+        summarize(TOTAL_CROPDMG = sum(CROPDMG_inUS, na.rm = TRUE)/(1e+06)) %>%
+        arrange(desc(TOTAL_CROPDMG))
+
+economicimpact_evtype <- merge(CROPDMG_EVTYPE, PROPDMG_EVTYPE, by = "EVTYPE")
+economicimpact_evtype <- economicimpact_evtype %>% mutate(TOTAL_DMG = (TOTAL_CROPDMG+TOTAL_PROPDMG)) %>%
+        arrange(desc(TOTAL_DMG))
+
+# Subsetting top 10 economic impact per event types 
+economicimpact_evtype <- economicimpact_evtype[1:10,]
+```
+
+## 4. Results
+
+### 4.1 Health impact of severe weather events in United States
+
+Results from the health impact of weather events were stored in the **healthimpact_evtype** data frame. The next table shows the top 10 of severe weather event on the number of fatalities+injuries (or health related events) in the US. Also, the danger indicator is shown.
+
+```{r, cache= TRUE, echo= TRUE}
+healthimpact_evtype
+```
+
+The next figure shows the total number of health related events in the use. The severity indicator as the proportion of fatalities to total events is used to fill the bars in the barplot.
+
+```{R plothealth, fig.align="center", fig.cap = "Figure 1. Health impact of severe weather events in US between 1950 to 2011", cache= TRUE, echo = TRUE}
+library(ggplot2)
+p <- ggplot(healthimpact_evtype, aes(x=reorder(EVTYPE, EVENTS), y=EVENTS, fill = DANGER)) +
+  geom_bar(stat="identity") + theme_bw() + coord_flip() +
+      labs(x = "Weather event types") +
+      labs(y = "Number of health related events") +
+      labs(title = "Health impact of severe weather events") +
+      labs(colour = "Severity") 
+p
+```
+
+### 4.2 Economic impact of severe weather events in United States
+
+The top 10 of the Weather events with the highest economic damages in Millions of US dollars is shown in the next table.
+
+```{r, cache= TRUE, echo= TRUE}
+economicimpact_evtype 
+```
+
+The next plot shows the total economic impact of Weather events in the US from 1950 to 2011.
+
+```{R ploteconomy, fig.align="center", fig.cap = "Figure 1. Economy impact of severe weather events in US between 1950 to 2011", cache= TRUE, echo = TRUE}
+library(ggplot2)
+p <- ggplot(economicimpact_evtype , aes(x=reorder(EVTYPE, TOTAL_DMG), y=TOTAL_DMG)) +
+  geom_bar(stat="identity") + theme_bw() + coord_flip() +
+      labs(x = "Weather event types") +
+      labs(y = "Total economic impact in Millions of US") +
+      labs(title = "Economy impact of severe weather events")
+p
+```
+
+## Discussion
+
+Clearly, Tornados are the most harmful weather events according to the health related event index, followed by Excessive Heat, TSTM Wind, Floods, and Lighting. Nevertheless, in terms of total number of fatalities, the rank changes starting from third place in which Flash Floods, and Heath occupies third and fourth place in the ranking maintaining Lighting in fifth place.
+Floods are the Weather events with the highest economic impact estimated as the total damage from property and crops, followed by Hurricane/Typhoons, Tornado, Storm Surge and Hails. While crop damage cost is important, property damage cost have a higher effect on the ranking results.
+
+
+[1]: https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2 "Storm Database"
+[2]: https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2Fpd01016005curr.pdf "Storm Data Documentation"
